@@ -46,6 +46,13 @@ class ModelSelector(object):
                 print("failure on {} with {} states".format(self.this_word, num_states))
             return None
 
+    def get_components(self):
+        """
+        generate components between min_n_components and max_n_components (included).
+        """
+        n_components = np.arange(self.min_n_components, self.max_n_components+1)
+        for n_component in n_components:
+            yield n_component
 
 class SelectorConstant(ModelSelector):
     """ select the model with value self.n_constant
@@ -76,9 +83,38 @@ class SelectorBIC(ModelSelector):
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on BIC scores
-        raise NotImplementedError
+        models = []
+        
+        # log of sample size
+        logN = np.log(len(self.X))
+        # number of features
+        n_features = self.X.shape[1]
+        
+        for n_component in self.get_components():
+            hmm_model = self.base_model(n_component)
+            
+            # if failed to train, just ignore
+            if not hmm_model:
+                models.append((hmm_model, np.inf))
+                continue
 
+            try:
+                # scoring likelihood
+                logL = hmm_model.score(self.X, self.lengths)
+                
+                # estimating number of parameters
+                # https://discussions.udacity.com/t/verifing-bic-calculation/246165/2
+                p = n_component**2 + n_component*n_features*2 - 1
+                
+                # calculating BIC score
+                BICscore = -2 * logL + p*logN
+
+                models.append((hmm_model, BICscore))
+            except:
+                # if failed to score, just ignore
+                models.append((hmm_model, np.inf))
+
+        return min(models, key=lambda model:model[1])[0]
 
 class SelectorDIC(ModelSelector):
     ''' select best model based on Discriminative Information Criterion
@@ -93,9 +129,36 @@ class SelectorDIC(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+        models = []
+        
+        # retrieving all words except the current one
+        rest_words = [word for word, _ in self.words.items() if word != self.this_word]
 
+        for n_component in self.get_components():
+            hmm_model = self.base_model(n_component)
+            
+            # if failed to train, just ignore
+            if not hmm_model:
+                models.append((hmm_model, -np.inf))
+                continue
+            
+            try:
+                # scoring evidence likelihood
+                logL = hmm_model.score(self.X, self.lengths)
+                
+                # scoring anti-evidence likelihood
+                log_antiL = [hmm_model.score(self.hwords[word][0], self.hwords[word][1]) for word in rest_words]
+            except:
+                # if failed to score, just ignore
+                models.append((hmm_model, -np.inf))
+                continue
+            
+            # difference between evidence likelihood and the average of the anti-evidence likelihood
+            DICscore = logL - sum(log_antiL)/len(rest_words)
+            
+            models.append((hmm_model, DICscore))
+        
+        return max(models, key=lambda model : model[1])[0]
 
 class SelectorCV(ModelSelector):
     ''' select best model based on average log Likelihood of cross-validation folds
@@ -105,5 +168,32 @@ class SelectorCV(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection using CV
-        raise NotImplementedError
+        models = []
+        
+        # defining split method
+        splits = 2 if len(self.sequences) <= 3 else 3
+        split_method = KFold(n_splits=splits)
+        
+        for n_component in self.get_components():
+            hmm_model = GaussianHMM(n_components=n_component, covariance_type="diag", n_iter=1000, 
+                              random_state=self.random_state, verbose=False)
+
+            likelihood = []
+            for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
+                # splitting training and testing samples
+                X_train, length_train = combine_sequences(cv_train_idx, self.sequences)
+                X_test,  length_test  = combine_sequences(cv_test_idx,  self.sequences)
+                
+                try:
+                    # fitting the traning samples
+                    model = hmm_model.fit(X_train, length_train)
+                    
+                    # validating with testing samples
+                    likelihood.append(model.score(X_test, length_test))
+                except:
+                    # if failed, just ignore
+                    likelihood.append(-np.inf)
+            
+            # storing the average likelihood
+            models.append((hmm_model, np.mean(likelihood)))
+        return max(models, key=lambda model : model[1])[0]
