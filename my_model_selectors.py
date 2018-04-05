@@ -171,6 +171,9 @@ class SelectorCV(ModelSelector):
         models = []
         
         # defining split method
+        if len(self.sequences) == 1:
+            return None
+        
         splits = 2 if len(self.sequences) <= 3 else 3
         split_method = KFold(n_splits=splits)
         
